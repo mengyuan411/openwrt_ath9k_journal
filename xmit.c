@@ -627,12 +627,16 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 			/* transmit completion, subframe is
 			 * acked by block ack */
 			acked_cnt++;
+			printk(KERN_DEBUG "ath_tx_complete_aggr;ackba;firetries;%d;retries;%d\n",fi->retries,retries);
+
 		} else if (!isaggr && txok) {
 			/* transmit completion */
 			acked_cnt++;
+			printk(KERN_DEBUG "ath_tx_complete_aggr;ack;firetries;%d;retries;%d\n",fi->retries,retries);
 		} else if (flush) {
 			txpending = 1;
 		} else if (fi->retries < ATH_MAX_SW_RETRIES) {
+			printk(KERN_DEBUG "ath_tx_complete_aggr;notack;firetries;%d;retries;%d\n",fi->retries,retries);
 			if (txok || !an->sleeping)
 				ath_tx_set_retry(sc, txq, bf->bf_mpdu,
 						 retries);
@@ -2863,7 +2867,7 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 	struct list_head bf_head;
 	struct list_head *fifo_list;
 	int status;
-	
+	int count = 0;
 
 	struct timespec now;
 	getnstimeofday(&now);
@@ -2896,9 +2900,9 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 			// add end by mengy
 			continue;
 		}
-
+		count++;
 		txq = &sc->tx.txq[ts.qid];
-		printk(KERN_DEBUG "ath_tx_edma_tasklet;txqid;%d\n",ts.qid);
+	//	printk(KERN_DEBUG "ath_tx_edma_tasklet;count;%d;txqid;%d;txq_tailidx;%d;mac80211_qnum;%d;axq_qnum;%d\n",count,ts.qid,txq->txq_tailidx,txq->mac80211_qnum,txq->axq_qnum);
 		ath_txq_lock(sc, txq);
 
 		TX_STAT_INC(txq->axq_qnum, txprocdesc);
@@ -2915,9 +2919,9 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 			ath_tx_return_buffer(sc, bf);
 			bf = list_first_entry(fifo_list, struct ath_buf, list);
 		}
-
+		printk(KERN_DEBUG "ath_tx_edma_tasklet;count;%d;txqid;%d;is_ampdu;%d;txq_tailidx;%d;mac80211_qnum;%d;axq_qnum;%d\n",count,ts.qid,bf_isampdu(bf),txq->txq_tailidx,txq->mac80211_qnum,txq->axq_qnum);
 		lastbf = bf->bf_lastbf;
-
+		
 		INIT_LIST_HEAD(&bf_head);
 		if (list_is_last(&lastbf->list, fifo_list)) {
 			list_splice_tail_init(fifo_list, &bf_head);
@@ -2943,7 +2947,7 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 		ath_txq_unlock_complete(sc, txq);
 	}
 		//change for journal measure te-tw avg by mengy
-		printk(KERN_DEBUG "ath_tx_edma_tasklet;%d;%d;%d\n",ack_count,has_ampdu_packet,has_beacon_flag);
+		//printk(KERN_DEBUG "ath_tx_edma_tasklet;%d;%d;%d\n",ack_count,has_ampdu_packet,has_beacon_flag);
 		last_ack = this_ack;
 		update_te_flag = 0;
 		update_tw_flag = 0;
@@ -3155,4 +3159,5 @@ int ath9k_tx99_send(struct ath_softc *sc, struct sk_buff *skb,
 }
 
 #endif /* CPTCFG_ATH9K_TX99 */
+
 
