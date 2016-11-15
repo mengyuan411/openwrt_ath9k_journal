@@ -1498,7 +1498,7 @@ ath_tx_form_burst(struct ath_softc *sc, struct ath_txq *txq,
 		// add by mengy for the tw timestamp
 		struct timespec tw;
 		getnstimeofday(&tw);
-		skb->tstamp = timespec_to_ktime(tw);
+		bf->twstamp = timespec_to_ktime(tw);
 		// add end by mengy
 		
 		nframes++;
@@ -1576,12 +1576,9 @@ static bool ath_tx_sched_aggr(struct ath_softc *sc, struct ath_txq *txq,
 	}
 
 	ath_tx_fill_desc(sc, bf, txq, aggr_len);
-//	ath_tx_txqaddbuf(sc, txq, &bf_q, false); //change by mengy for next
+	ath_tx_txqaddbuf(sc, txq, &bf_q, false); //change by mengy for next
 	printk(KERN_DEBUG "call recv in ath_tx_sched_aggr\n");
-	if(pkt_type == 1)
-		recv(aggr_len, sc, txq, bf_q, false);// add by mengy
-	else
-		recv(burst_len, sc, txq, bf_q, false);// add by mengy
+	
 	
 	return true;
 }
@@ -2664,6 +2661,7 @@ static void ath_tx_complete_buf(struct ath_softc *sc, struct ath_buf *bf,
 	unsigned long flags;
 	int tx_flags = 0;
 	// add by mengy for the packet ack process
+	/*
 	if(txok)
 	{
 		struct timespec tw;
@@ -2675,7 +2673,7 @@ static void ath_tx_complete_buf(struct ath_softc *sc, struct ath_buf *bf,
 		}
 		packet_number++;
 		packet_size_all = packet_size_all + skb->len;
-	}
+	}*/
 	//add end by mengy
 	if (!txok)
 		tx_flags |= ATH_TX_ERROR;
@@ -2865,8 +2863,11 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 	struct list_head bf_head;
 	struct list_head *fifo_list;
 	int status;
-	int get_ack_flag = 0; //flag the get ack already by mengy
+	
 
+	struct timespec now;
+	getnstimeofday(&now);
+	this_ack = now;
 	for (;;) {
 		if (test_bit(ATH_OP_HW_RESET, &common->op_flags))
 			break;
@@ -2936,40 +2937,21 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 				list_cut_position(&bf_head, fifo_list,
 						  lastbf->list.prev);
 		}
-		/* update lastack on one buf by mengy*/
-		if(get_ack_flag==0)
-		{
-			struct timespec now;
-			getnstimeofday(&now);
-			this_ack  = now;
-			update_te_flag = 1;
-			get_ack_flag=1;
-		}
-		//add end by mengy
-		ack_has_real_packet=1;
+		
+		
 		ath_tx_process_buffer(sc, txq, &ts, bf, &bf_head);
 		ath_txq_unlock_complete(sc, txq);
 	}
 		//change for journal measure te-tw avg by mengy
 		printk(KERN_DEBUG "ath_tx_edma_tasklet;%d;%d;%d\n",ack_count,has_ampdu_packet,has_beacon_flag);
-		if (!has_beacon_flag && ack_has_real_packet==1 && update_tw_flag==1 && update_te_flag==1)
-		{
-			struct timespec delayall = timespec_sub(this_ack,this_tw);
-			int delayavg = (delayall.tv_sec * 1000000 + delayall.tv_nsec/1000) / packet_number;
-			printk(KERN_DEBUG "ath_tx_edma_tasklet;mengy;%ld;%ld;%d;%ld\n",delayall.tv_sec,delayall.tv_nsec,delayavg,packet_number);
-		}
+		last_ack = this_ack;
 		update_te_flag = 0;
 		update_tw_flag = 0;
 		has_beacon_flag = 0;
 		ack_count = 0;
 		has_ampdu_packet = 0;
-		packet_number = 0;
-		this_ack.tv_sec =0;
-		this_ack.tv_nsec = 0;
-		this_tw.tv_sec = 0;
-		this_tw.tv_nsec = 0;
-		first_call_flag=0;
-		ack_has_real_packet=0;
+		
+		
 		/*
 		// call update peak by mengy
 		if (!has_beacon_flag && ack_has_real_packet==1 && first_call_flag ==0)
@@ -3173,3 +3155,4 @@ int ath9k_tx99_send(struct ath_softc *sc, struct sk_buff *skb,
 }
 
 #endif /* CPTCFG_ATH9K_TX99 */
+
