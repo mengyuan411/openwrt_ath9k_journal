@@ -105,17 +105,34 @@ void printampdu(struct list_head *head,int type, u8 tidno){
 }
 //for peak 
 struct timespec last_ack={0}; // for the last packet ack by mengy
-int update_te_flag = 0;
-int update_tw_flag = 0;
-int has_beacon_flag = 0;
-int ack_count = 0;
-int packet_size_all = 0;
-int ack_has_real_packet=0;
-int last_ack_update_flag = 0;
-int first_call_flag = 1;
-int has_ampdu_packet = 0;
 struct timespec this_ack = {0};
 struct timespec this_tw = {0};
+
+int printk_interval = 100;
+int init_flag_my = 0;
+spinlock_t lock_my;
+struct list_head log_queue;
+int has_beacon_flag = 0;
+int ack_count = 0;
+int has_ampdu_packet = 0;
+int print_count = 0;
+int has_real_packet = 0;
+int timespec_div(struct timespec time_gap,int packet_number)
+{
+	int all = time_gap.tv_sec * 1000000 + time_gap.tv_nsec / 1000;
+	return all/packet_number;
+}
+
+
+struct log_msg
+{
+	/* data */
+	struct list_head list;
+	int isaggr;
+	struct timespec tmac;
+	int retry;
+};
+
 //add end by mengy
 /*********************/
 /* Aggregation logic */
@@ -605,8 +622,10 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 	__skb_queue_head_init(&bf_pending);
 
 	ath_tx_count_frames(sc, bf, ts, txok, &nframes, &nbad);
+	ack_count = ack_count + nframes; //add by mengy
+
 	while (bf) {
-		ack_count++;
+		
 		u16 seqno = bf->bf_state.seqno;
 
 		txfail = txpending = sendbar = 0;
@@ -627,16 +646,18 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 			/* transmit completion, subframe is
 			 * acked by block ack */
 			acked_cnt++;
-			printk(KERN_DEBUG "ath_tx_complete_aggr;ackba;firetries;%d;retries;%d\n",fi->retries,retries);
+			
+			//printk(KERN_DEBUG "ath_tx_complete_aggr;ackba;firetries;%d;retries;%d\n",fi->retries,retries);
 
 		} else if (!isaggr && txok) {
 			/* transmit completion */
 			acked_cnt++;
-			printk(KERN_DEBUG "ath_tx_complete_aggr;ack;firetries;%d;retries;%d\n",fi->retries,retries);
+			
+			//printk(KERN_DEBUG "ath_tx_complete_aggr;ack;firetries;%d;retries;%d\n",fi->retries,retries);
 		} else if (flush) {
 			txpending = 1;
 		} else if (fi->retries < ATH_MAX_SW_RETRIES) {
-			printk(KERN_DEBUG "ath_tx_complete_aggr;notack;firetries;%d;retries;%d\n",fi->retries,retries);
+			//printk(KERN_DEBUG "ath_tx_complete_aggr;notack;firetries;%d;retries;%d\n",fi->retries,retries);
 			if (txok || !an->sleeping)
 				ath_tx_set_retry(sc, txq, bf->bf_mpdu,
 						 retries);
@@ -1581,7 +1602,7 @@ static bool ath_tx_sched_aggr(struct ath_softc *sc, struct ath_txq *txq,
 
 	ath_tx_fill_desc(sc, bf, txq, aggr_len);
 	ath_tx_txqaddbuf(sc, txq, &bf_q, false); //change by mengy for next
-	printk(KERN_DEBUG "call recv in ath_tx_sched_aggr\n");
+	//printk(KERN_DEBUG "call recv in ath_tx_sched_aggr\n");
 	
 	
 	return true;
@@ -2210,7 +2231,7 @@ static void ath_tx_send_normal(struct ath_softc *sc, struct ath_txq *txq,
 	getnstimeofday(&tw);
 	bf->twstamp = timespec_to_ktime(tw);
 	//timestamp_tw_for_each_skb(&bf_head);
-	printk(KERN_DEBUG "call recv in ath_tx_send_normal");
+	//printk(KERN_DEBUG "call recv in ath_tx_send_normal\n");
 	//recv(fi->framelen, sc, txq, bf_head, false);
 	//add end by mengy
 	ath_tx_txqaddbuf(sc, txq, &bf_head, false); // change for before
@@ -2665,19 +2686,45 @@ static void ath_tx_complete_buf(struct ath_softc *sc, struct ath_buf *bf,
 	unsigned long flags;
 	int tx_flags = 0;
 	// add by mengy for the packet ack process
-	/*
-	if(txok)
+	
+	if(txok && (ktime_to_timespec(skb->tstamp).tv_sec !=0 || ktime_to_timespec(skb->tstamp).tv_nsec !=0))
 	{
-		struct timespec tw;
-		tw = ktime_to_timespec(skb->tstamp);
-		if(update_tw_flag==0 || timespec_compare(&tw,&this_tw) < 0)
-		{
-			this_tw = tw;
-			update_tw_flag=1;
-		}
-		packet_number++;
-		packet_size_all = packet_size_all + skb->len;
-	}*/
+		struct ath_frame_info *fi = get_frame_info(skb);
+		int isaggr = bf_isaggr(bf);
+		if(fi->retries!=0)
+			{
+				struct log_msg *my_packet;
+				my_packet = kzalloc(sizeof(struct log_msg),GFP_KERNEL);
+				INIT_LIST_HEAD(&my_packet->list);
+				my_packet->isaggr=isaggr;
+				my_packet->tmac=timespec_sub(this_ack,ktime_to_timespec(skb->tstamp));
+				my_packet->retry=fi->retries;
+				list_add_tail(&my_packet->list,&log_queue);
+			}
+			else
+			{
+				print_count++;
+				if(print_count == printk_interval)
+				{
+					struct log_msg *my_packet;
+					my_packet = kzalloc(sizeof(struct log_msg),GFP_KERNEL);
+					INIT_LIST_HEAD(&my_packet->list);
+					my_packet->isaggr=isaggr;
+					struct timespec tmp = ktime_to_timespec(bf->twstamp);
+					if(timespec_compare(&tmp,&last_ack)>0)
+					{
+						my_packet->tmac=timespec_sub(ktime_to_timespec(bf->twstamp),ktime_to_timespec(skb->tstamp));
+					}
+					else
+					{
+						my_packet->tmac=timespec_sub(last_ack,ktime_to_timespec(skb->tstamp));
+					}
+					my_packet->retry=fi->retries;
+					list_add_tail(&my_packet->list,&log_queue);
+					print_count = 0;
+				}
+			}
+	}
 	//add end by mengy
 	if (!txok)
 		tx_flags |= ATH_TX_ERROR;
@@ -2868,10 +2915,20 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 	struct list_head *fifo_list;
 	int status;
 	int count = 0;
-
+	/*add by mengy*/
 	struct timespec now;
 	getnstimeofday(&now);
 	this_ack = now;
+
+	if(init_flag_my==0)
+	{
+		INIT_LIST_HEAD(&log_queue);
+		spin_lock_init(&lock_my);
+		init_flag_my = 1;
+	}
+	spin_lock_irq(&lock_my);
+	/*add end*/
+
 	for (;;) {
 		if (test_bit(ATH_OP_HW_RESET, &common->op_flags))
 			break;
@@ -2900,7 +2957,7 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 			// add end by mengy
 			continue;
 		}
-		count++;
+		
 		txq = &sc->tx.txq[ts.qid];
 	//	printk(KERN_DEBUG "ath_tx_edma_tasklet;count;%d;txqid;%d;txq_tailidx;%d;mac80211_qnum;%d;axq_qnum;%d\n",count,ts.qid,txq->txq_tailidx,txq->mac80211_qnum,txq->axq_qnum);
 		ath_txq_lock(sc, txq);
@@ -2912,14 +2969,19 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 			ath_txq_unlock(sc, txq);
 			return;
 		}
-
+		count++;
 		bf = list_first_entry(fifo_list, struct ath_buf, list);
 		if (bf->bf_state.stale) {
 			list_del(&bf->list);
 			ath_tx_return_buffer(sc, bf);
 			bf = list_first_entry(fifo_list, struct ath_buf, list);
 		}
-		printk(KERN_DEBUG "ath_tx_edma_tasklet;count;%d;txqid;%d;is_ampdu;%d;txq_tailidx;%d;mac80211_qnum;%d;axq_qnum;%d\n",count,ts.qid,bf_isampdu(bf),txq->txq_tailidx,txq->mac80211_qnum,txq->axq_qnum);
+			//printk(KERN_DEBUG "ath_tx_edma_tasklet;count;%d;txqid;%d;is_ampdu;%d;txq_tailidx;%d;mac80211_qnum;%d;axq_qnum;%d\n",count,ts.qid,bf_isampdu(bf),txq->txq_tailidx,txq->mac80211_qnum,txq->axq_qnum);
+		/* add by mengy*/
+		if(count == 1)
+		{
+			this_tw = ktime_to_timespec(bf->twstamp);
+		}
 		lastbf = bf->bf_lastbf;
 		
 		INIT_LIST_HEAD(&bf_head);
@@ -2942,67 +3004,41 @@ void ath_tx_edma_tasklet(struct ath_softc *sc)
 						  lastbf->list.prev);
 		}
 		
-		
+		has_real_packet = 1;
 		ath_tx_process_buffer(sc, txq, &ts, bf, &bf_head);
 		ath_txq_unlock_complete(sc, txq);
 	}
 		//change for journal measure te-tw avg by mengy
 		//printk(KERN_DEBUG "ath_tx_edma_tasklet;%d;%d;%d\n",ack_count,has_ampdu_packet,has_beacon_flag);
+		if(has_real_packet)
+		{
+			struct timespec gap_time;
+			if(timespec_compare(&this_tw,&last_ack)>0)
+				gap_time = timespec_sub(this_ack,this_tw);
+			else
+				gap_time = timespec_sub(this_ack,last_ack);
+
+			int lphy = timespec_div(gap_time,ack_count);
+
+			struct log_msg *tmp, *n;
+			list_for_each_entry_safe(tmp,n,&log_queue,list)
+			{
+				int lmac = tmp->tmac.tv_sec * 1000000 + tmp->tmac.tv_nsec / 1000;
+				printk(KERN_DEBUG "my;%d;%d;%ld;%d;%d;%d\n",tmp->isaggr,tmp->retry,lmac,lphy,has_ampdu_packet,has_beacon_flag);
+				list_del(&tmp->list);
+				kfree(tmp);
+			}
+		}
+
+
 		last_ack = this_ack;
-		update_te_flag = 0;
-		update_tw_flag = 0;
 		has_beacon_flag = 0;
 		ack_count = 0;
 		has_ampdu_packet = 0;
+		has_real_packet = 0;
+		spin_unlock_irq(&lock_my);
 		
 		
-		/*
-		// call update peak by mengy
-		if (!has_beacon_flag && ack_has_real_packet==1 && first_call_flag ==0)
-		{
-			if(update_te_flag == 0)
-			{
-				//printk(KERN_DEBUG "ath9k error the te is not update this time\n");
-				return;
-			}
-			if(update_tw_flag == 0)
-			{
-				//printk(KERN_DEBUG "ath9k error the tw is not update this time\n");
-				return;
-			}
-			if(last_ack_update_flag == 0)
-			{
-				//printk(KERN_DEBUG "ath9k error the last_ack is not update before\n");
-				return;
-			}
-			struct timespec th;
-			int th_flag=0;
-			if(timespec_compare(&last_ack,&this_tw)<0)
-			{
-				th = this_tw;
-				th_flag=1;
-			}
-			else
-				th = last_ack;	
-			struct timespec p_delay = timespec_sub(this_ack,th);
-			struct timespec all_delay = timespec_sub(this_ack,this_tw);
-			//printk(KERN_DEBUG "p_delay %d.%d pnumber %d th use tw %d\n",p_delay.tv_sec,p_delay.tv_nsec,packet_number,th_flag);
-			update_deqrate(p_delay,all_delay,packet_size_all,packet_number);
-			last_ack_update_flag = 0;
-		}
-			last_ack=this_ack;
-			last_ack_update_flag = 1;
-			update_te_flag = 0;
-			update_tw_flag = 0;
-			has_beacon_flag = 0;
-			packet_number = 0;
-			packet_size_all = 0;
-			this_ack.tv_sec =0;
-			this_ack.tv_nsec = 0;
-			this_tw.tv_sec = 0;
-			this_tw.tv_nsec = 0;
-			first_call_flag=0;
-		*/
 }
 
 /*****************/
@@ -3159,5 +3195,6 @@ int ath9k_tx99_send(struct ath_softc *sc, struct sk_buff *skb,
 }
 
 #endif /* CPTCFG_ATH9K_TX99 */
+
 
 
